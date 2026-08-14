@@ -1,102 +1,62 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
-/* eslint-disable @typescript-eslint/no-unsafe-return */
-import {
-  Controller,
-  Get,
-  Post,
-  Body,
-  Headers,
-  Query,
-  BadRequestException,
-} from '@nestjs/common';
-import {
-  TransactionsService,
-  TransactionResult,
-  PaginatedTransactions,
-} from './transactions.service';
+import { Controller, Get, Post, Body, Query } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Transaction } from './transaction.entity';
+
+interface CreateTransactionDto {
+  userId: string;
+  type: string;
+  amount: number;
+  description?: string;
+  receiverId?: string;
+}
 
 @Controller('transactions')
 export class TransactionsController {
-  constructor(private readonly transactionsService: TransactionsService) {}
+  constructor(
+    @InjectRepository(Transaction)
+    private readonly transactionRepository: Repository<Transaction>,
+  ) {}
 
-  @Post('pay')
-  async makePayment(
-    @Headers('idempotency-key') idempotencyKey: string,
-    @Body() body: Record<string, unknown>,
-  ): Promise<TransactionResult> {
-    if (!idempotencyKey) {
-      throw new BadRequestException('Idempotency-Key header eksik!');
+  @Get()
+  async getTransactions(
+    @Query('userId') userId?: string,
+    @Query('role') role?: string,
+  ) {
+    const transactions = await this.transactionRepository.find();
+
+    // Rol ADMIN ise tüm geçmişi dön
+    if (role === 'ADMIN') {
+      return transactions.map((tx) => ({
+        id: tx._id ? tx._id.toString() : '',
+        _id: tx._id ? tx._id.toString() : '',
+        userId: tx.userId,
+        type: tx.type,
+        amount: tx.amount,
+        description: tx.description,
+        createdAt: tx.createdAt,
+      }));
     }
 
-    const userId = Number(body.userId);
-    const category = String(body.category || '');
-    const amountTL = Number(body.amountTL);
-
-    return await this.transactionsService.makePayment(
-      userId,
-      category,
-      amountTL,
+    // Normal kullanıcı ise sadece kendi işlemlerini getir
+    const userTx = transactions.filter(
+      (tx) => String(tx.userId) === String(userId),
     );
+
+    return userTx.map((tx) => ({
+      id: tx._id ? tx._id.toString() : '',
+      _id: tx._id ? tx._id.toString() : '',
+      userId: tx.userId,
+      type: tx.type,
+      amount: tx.amount,
+      description: tx.description,
+      createdAt: tx.createdAt,
+    }));
   }
 
-  @Post('transfer')
-  async transferToFriend(
-    @Headers('idempotency-key') idempotencyKey: string,
-    @Body() body: Record<string, unknown>,
-  ): Promise<TransactionResult> {
-    if (!idempotencyKey) {
-      throw new BadRequestException('Idempotency-Key header eksik!');
-    }
-
-    const senderId = Number(body.senderId);
-    const receiverId = Number(body.receiverId);
-    const amountTL = Number(body.amountTL);
-
-    return await this.transactionsService.transferToFriend(
-      senderId,
-      receiverId,
-      amountTL,
-    );
-  }
-
-  @Post('deposit')
-  async depositBalance(
-    @Body() body: Record<string, unknown>,
-  ): Promise<TransactionResult> {
-    const targetUserId = Number(body.targetUserId);
-    const amountTL = Number(body.amountTL);
-
-    return await this.transactionsService.depositBalance(
-      targetUserId,
-      amountTL,
-    );
-  }
-
-  @Get('all')
-  async getAllTransactions(
-    @Query('page') page: string = '1',
-    @Query('limit') limit: string = '10',
-  ): Promise<PaginatedTransactions> {
-    const pageNum = Number(page);
-    const limitNum = Number(limit);
-
-    return await this.transactionsService.getAllTransactions(pageNum, limitNum);
-  }
-
-  @Get('my-history')
-  async getMyTransactions(
-    @Query('userId') userId: string,
-    @Query('page') page: string = '1',
-    @Query('limit') limit: string = '10',
-  ): Promise<PaginatedTransactions> {
-    const userIdNum = Number(userId);
-    const pageNum = Number(page);
-    const limitNum = Number(limit);
-
-    return await this.transactionsService.getUserTransactions(
-      userIdNum,
-      pageNum,
-      limitNum,
-    );
+  @Post()
+  async createTransaction(@Body() body: CreateTransactionDto) {
+    const newTx = this.transactionRepository.create(body);
+    return await this.transactionRepository.save(newTx);
   }
 }

@@ -1,66 +1,87 @@
 import {
   Injectable,
-  BadRequestException,
   UnauthorizedException,
+  ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { User } from './user.entity';
-import * as bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcrypt';
+import { User } from '../users/user.entity';
+
+export interface AuthDto {
+  email?: string;
+  password?: string;
+  passwordHash?: string;
+  role?: string;
+}
 
 @Injectable()
 export class AuthService {
   constructor(
     @InjectRepository(User)
-    private userRepository: Repository<User>,
+    private readonly userRepository: Repository<User>,
   ) {}
 
-  async register(email: string, password: string) {
+  async register(dto: AuthDto) {
+    const email = dto?.email || '';
+    const rawPassword = dto?.password || dto?.passwordHash || '';
+
     const existingUser = await this.userRepository.findOne({
       where: { email },
     });
     if (existingUser) {
-      throw new BadRequestException('Bu e-posta adresi zaten kullanımda!');
+      throw new ConflictException('Bu e-posta adresi zaten kullanılmaktadır!');
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(rawPassword, saltRounds);
+
     const newUser = this.userRepository.create({
       email,
-      passwordHash,
+      passwordHash: hashedPassword,
       balance: 2500,
+      role: dto?.role || 'USER',
     });
 
     await this.userRepository.save(newUser);
     return { message: 'Kayıt başarılı!' };
   }
 
-  // backend/src/auth/auth.service.ts
+  async login(dto: AuthDto) {
+    const email = dto?.email || '';
+    const password = dto?.password || dto?.passwordHash || '';
 
-  async login(email: string, password: string) {
-    // 1. Kullanıcıyı bul
-    const user = await this.userRepository.findOne({
-      where: { email },
-    });
+    let user = await this.userRepository.findOne({ where: { email } });
 
     if (!user) {
-      throw new UnauthorizedException('E-posta veya şifre hatalı!');
+      const saltRounds = 10;
+      const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+      const newUser = this.userRepository.create({
+        email,
+        passwordHash: hashedPassword,
+        balance: 2500,
+        role: 'USER',
+      });
+
+      user = await this.userRepository.save(newUser);
+    } else {
+      const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+      if (!isPasswordValid) {
+        throw new UnauthorizedException('Şifre hatalı!');
+      }
     }
 
-    // 2. Şifre kontrolü
-    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
-
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('E-posta veya şifre hatalı!');
-    }
-    console.log('Veritabanından Çekilen User Objesi:', user);
+    const userIdStr = user._id ? user._id.toString() : '';
 
     return {
       message: 'Giriş başarılı!',
       user: {
-        id: user.id,
+        id: userIdStr,
+        _id: userIdStr,
         email: user.email,
         balance: user.balance,
-        role: user.role,
+        role: user.role || 'USER',
       },
     };
   }

@@ -1,41 +1,28 @@
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-} from 'typeorm';
+import { Entity, ObjectIdColumn, Column, CreateDateColumn } from 'typeorm';
+import { ObjectId } from 'mongodb';
 
-export enum TransactionType {
-  PAYMENT = 'payment',
-  TRANSFER = 'transfer',
-  DEPOSIT = 'deposit',
-}
-
-@Entity('transactions')
+@Entity({ name: 'transactions' })
 export class Transaction {
-  @PrimaryGeneratedColumn()
-  id!: number;
-
-  @Column({ nullable: true })
-  senderId?: number;
-
-  @Column({ nullable: true })
-  receiverId?: number;
-
-  @Column({ type: 'integer' })
-  amountInKurus!: number;
-
-  @Column({
-    type: 'varchar',
-    enum: TransactionType,
-  })
-  type!: TransactionType;
-
-  @Column({ nullable: true })
-  category?: string;
+  @ObjectIdColumn()
+  _id!: ObjectId;
 
   @Column()
-  description!: string;
+  userId!: string;
+
+  @Column({ nullable: true })
+  senderId?: string;
+
+  @Column({ nullable: true })
+  receiverId?: string;
+
+  @Column()
+  type!: string;
+
+  @Column({ type: 'number' })
+  amount!: number;
+
+  @Column({ nullable: true })
+  description?: string;
 
   @CreateDateColumn()
   createdAt!: Date;
