@@ -5,645 +5,456 @@ import { useRouter } from "next/navigation";
 import axios from "axios";
 
 interface UserType {
-  id: number;
+  id?: string;
+  _id?: string;
   email: string;
   balance: number;
-  role: string;
+  role?: string;
 }
 
 interface TransactionType {
-  id: number;
-  senderId: number;
-  receiverId: number;
-  amountInKurus: number;
-  amountTL: number;
+  id?: string;
+  _id?: string;
+  userId: string;
   type: string;
-  description: string;
+  amount: number;
+  description?: string;
   createdAt: string;
-}
-
-interface ReconciliationReportType {
-  timestamp: string;
-  totalUsersChecked: number;
-  hasDiscrepancy: boolean;
-  details: unknown[];
 }
 
 export default function DashboardPage() {
   const router = useRouter();
-
-  // Lazy initialization ile localStorage okuma
-  const [currentUser, setCurrentUser] = useState<UserType | null>(() => {
-    if (typeof window !== "undefined") {
-      const stored = localStorage.getItem("user");
-      if (stored) {
-        try {
-          return JSON.parse(stored);
-        } catch {
-          return null;
-        }
-      }
-    }
-    return null;
-  });
-
+  const [user, setUser] = useState<UserType | null>(null);
   const [allUsers, setAllUsers] = useState<UserType[]>([]);
   const [transactions, setTransactions] = useState<TransactionType[]>([]);
-  const [page, setPage] = useState(1);
-  const [lastPage, setLastPage] = useState(1);
+  const [loading, setLoading] = useState(true);
 
-  const [reconciliationReport, setReconciliationReport] =
-    useState<ReconciliationReportType | null>(null);
+  // Form State
+  const [payCategory, setPayCategory] = useState("Yemek Kasası");
+  const [payAmount, setPayAmount] = useState("");
+  const [targetUserId, setTargetUserId] = useState("");
+  const [transferAmount, setTransferAmount] = useState("");
 
-  // Form State'leri
-  const [payCategory, setPayCategory] = useState("yemek");
-  const [payAmount, setPayAmount] = useState(50);
-
-  const [transferReceiverId, setTransferReceiverId] = useState<number | null>(
-    null,
-  );
-  const [transferAmount, setTransferAmount] = useState(100);
-
-  const [depositTargetId, setDepositTargetId] = useState<number | null>(null);
-  const [depositAmount, setDepositAmount] = useState(500);
-
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const isAdmin = currentUser?.role === "admin";
-
-  // Veri yükleme fonksiyonu
-  const loadDataManual = async () => {
-    if (!currentUser) return;
+  const fetchData = async (currentUser: UserType) => {
     try {
-      const usersRes = await axios.get("http://localhost:5001/users");
-      setAllUsers(usersRes.data);
+      setLoading(true);
+      const userId = currentUser._id || currentUser.id;
 
-      // Rol Kontrolü: Admin tümünü, User sadece KENDİ geçmişini çeker
-      const endpoint =
-        currentUser.role === "admin"
-          ? `http://localhost:5001/transactions/all?page=${page}`
-          : `http://localhost:5001/transactions/my-history?userId=${currentUser.id}&page=${page}`;
+      let activeUser = currentUser;
 
-      const txRes = await axios.get(endpoint);
-      setTransactions(txRes.data.data);
-      setLastPage(txRes.data.lastPage);
+      // 1. Veritabanından en güncel halini çek
+      if (userId) {
+        try {
+          const meRes = await axios.get(
+            `http://localhost:5002/users/${userId}`,
+          );
+          if (meRes.data) {
+            activeUser = {
+              ...meRes.data,
+              id: meRes.data._id || meRes.data.id,
+            };
+            setUser(activeUser);
+            localStorage.setItem("user", JSON.stringify(activeUser));
+          }
+        } catch (e) {
+          console.warn("Profil tazelenirken hata:", e);
+        }
+      }
+
+      // 2. Diğer kullanıcıları getir
+      const usersRes = await axios.get("http://localhost:5002/users");
+      const others = usersRes.data.filter(
+        (u: UserType) => (u._id || u.id) !== userId,
+      );
+      setAllUsers(others);
+
+      // 3. İşlemleri getir
+      const currentRole = String(activeUser.role).trim().toUpperCase();
+      const txRes = await axios.get(
+        `http://localhost:5002/transactions?userId=${userId}&role=${currentRole}`,
+      );
+      setTransactions(txRes.data);
     } catch (err) {
-      console.error("Veri yüklenemedi", err);
+      console.error("Veri çekme hatası:", err);
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (!currentUser) {
-      router.push("/login");
-      return;
-    }
+    const initDashboard = async () => {
+      const storedUser = localStorage.getItem("user");
+      if (!storedUser) {
+        router.push("/login");
+        return;
+      }
 
-    let isSubscribed = true;
-
-    const fetchData = async () => {
       try {
-        const usersRes = await axios.get("http://localhost:5001/users");
-        if (!isSubscribed) return;
-        setAllUsers(usersRes.data);
-
-        const endpoint =
-          currentUser.role === "admin"
-            ? `http://localhost:5001/transactions/all?page=${page}`
-            : `http://localhost:5001/transactions/my-history?userId=${currentUser.id}&page=${page}`;
-
-        const txRes = await axios.get(endpoint);
-        if (!isSubscribed) return;
-        setTransactions(txRes.data.data);
-        setLastPage(txRes.data.lastPage);
-      } catch (err) {
-        console.error("Veri yüklenemedi", err);
+        const parsedUser = JSON.parse(storedUser) as UserType;
+        await fetchData(parsedUser);
+      } catch {
+        localStorage.removeItem("user");
+        router.push("/login");
       }
     };
 
-    void fetchData();
-
-    return () => {
-      isSubscribed = false;
-    };
-  }, [currentUser, page, router]);
-
-  // Ödeme Yap
-  const handlePayment = async () => {
-    if (!currentUser || isSubmitting) return;
-    setIsSubmitting(true);
-
-    const timeStampKey = String(new Date().getTime());
-    const idempotencyKey = `pay-${currentUser.id}-${timeStampKey}`;
-
-    try {
-      const res = await axios.post(
-        "http://localhost:5001/transactions/pay",
-        {
-          userId: currentUser.id,
-          category: payCategory,
-          amountTL: Number(payAmount),
-        },
-        { headers: { "Idempotency-Key": idempotencyKey } },
-      );
-
-      alert("Ödeme Başarılı!");
-      updateUserBalance(res.data.newBalance);
-      await loadDataManual();
-    } catch (err: unknown) {
-      let errorMsg = "Ödeme başarısız!";
-      if (axios.isAxiosError(err)) {
-        errorMsg = err.response?.data?.message || errorMsg;
-      }
-      alert(Array.isArray(errorMsg) ? errorMsg.join(", ") : errorMsg);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // Transfer Gönder (User)
-  const handleTransfer = async () => {
-    if (!currentUser) return;
-    if (!transferReceiverId) {
-      alert("Lütfen alıcı seçin!");
-      return;
-    }
-    if (isSubmitting) return;
-    setIsSubmitting(true);
-
-    const timeStampKey = String(new Date().getTime());
-    const idempotencyKey = `transfer-${currentUser.id}-${timeStampKey}`;
-
-    try {
-      const res = await axios.post(
-        "http://localhost:5001/transactions/transfer",
-        {
-          senderId: currentUser.id,
-          receiverId: transferReceiverId,
-          amountTL: Number(transferAmount),
-        },
-        { headers: { "Idempotency-Key": idempotencyKey } },
-      );
-
-      alert("Transfer Başarılı!");
-      updateUserBalance(res.data.newBalance);
-      await loadDataManual();
-    } catch (err: unknown) {
-      let errorMsg = "Transfer başarısız!";
-      if (axios.isAxiosError(err)) {
-        errorMsg = err.response?.data?.message || errorMsg;
-      }
-      alert(Array.isArray(errorMsg) ? errorMsg.join(", ") : errorMsg);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // Bakiye Yükle (Admin)
-  const handleDeposit = async () => {
-    if (!depositTargetId) {
-      alert("Lütfen kullanıcı seçin!");
-      return;
-    }
-    if (isSubmitting) return;
-    setIsSubmitting(true);
-
-    try {
-      await axios.post("http://localhost:5001/transactions/deposit", {
-        targetUserId: depositTargetId,
-        amountTL: Number(depositAmount),
-      });
-
-      alert("Bakiye Yüklendi!");
-      await loadDataManual();
-    } catch (err: unknown) {
-      let errorMsg = "Bakiye yüklenemedi!";
-      if (axios.isAxiosError(err)) {
-        errorMsg = err.response?.data?.message || errorMsg;
-      }
-      alert(Array.isArray(errorMsg) ? errorMsg.join(", ") : errorMsg);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // Mutabakat (Admin)
-  const handleRunReconciliation = async () => {
-    try {
-      const res = await axios.get("http://localhost:5001/reconciliation/run");
-      setReconciliationReport(res.data);
-    } catch (err) {
-      console.error(err);
-      alert("Mutabakat çalıştırılamadı.");
-    }
-  };
-
-  const updateUserBalance = (newBalance: number) => {
-    if (!currentUser) return;
-    const updated = { ...currentUser, balance: newBalance };
-    setCurrentUser(updated);
-    localStorage.setItem("user", JSON.stringify(updated));
-  };
+    initDashboard();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleLogout = () => {
     localStorage.removeItem("user");
     router.push("/login");
   };
 
-  if (!currentUser) return <div style={centerStyle}>Yükleniyor...</div>;
+  const handlePayment = async () => {
+    if (!user || !payAmount || Number(payAmount) <= 0) return;
+    const amount = Number(payAmount);
+
+    if (user.balance < amount) {
+      alert("Yetersiz bakiye!");
+      return;
+    }
+
+    try {
+      const userId = user._id || user.id;
+      await axios.post("http://localhost:5002/transactions", {
+        userId,
+        type: payCategory,
+        amount,
+        description: `${payCategory} ödemesi`,
+      });
+
+      alert("Ödeme başarılı!");
+      setPayAmount("");
+      await fetchData(user);
+    } catch (err) {
+      console.error(err);
+      alert("Ödeme yapılırken hata oluştu!");
+    }
+  };
+
+  const handleTransfer = async () => {
+    if (
+      !user ||
+      !targetUserId ||
+      !transferAmount ||
+      Number(transferAmount) <= 0
+    )
+      return;
+    const amount = Number(transferAmount);
+
+    if (user.balance < amount) {
+      alert("Yetersiz bakiye!");
+      return;
+    }
+
+    const receiver = allUsers.find((u) => (u._id || u.id) === targetUserId);
+
+    try {
+      const userId = user._id || user.id;
+      await axios.post("http://localhost:5002/transactions", {
+        userId,
+        receiverId: targetUserId,
+        type: "Transfer",
+        amount,
+        description: `Transfer -> ${receiver?.email || targetUserId}`,
+      });
+
+      alert("Transfer başarılı!");
+      setTransferAmount("");
+      setTargetUserId("");
+      await fetchData(user);
+    } catch (err) {
+      console.error(err);
+      alert("Transfer sırasında hata oluştu!");
+    }
+  };
+
+  if (loading && !user) {
+    return (
+      <div style={{ padding: "40px", textAlign: "center" }}>Yükleniyor...</div>
+    );
+  }
+
+  const isAdmin = String(user?.role).trim().toUpperCase() === "ADMIN";
 
   return (
     <div
       style={{
-        maxWidth: "900px",
-        margin: "0 auto",
-        padding: "20px",
-        fontFamily: "sans-serif",
+        backgroundColor: "#f8fafc",
+        minHeight: "100vh",
+        padding: "40px 20px",
+        fontFamily: "system-ui",
       }}
     >
-      {/* BAKİYE KARTI */}
-      <div style={cardStyle}>
+      <div style={{ maxWidth: "800px", margin: "0 auto" }}>
+        {/* ÜST BİLGİ KARTI */}
         <div
           style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
+            backgroundColor: "#1e293b",
+            borderRadius: "16px",
+            padding: "30px",
+            color: "white",
+            marginBottom: "30px",
           }}
         >
-          <span style={badgeStyle(isAdmin)}>
-            {isAdmin ? "👑 Admin" : "👤 User"}
-          </span>
-          <button onClick={handleLogout} style={logoutBtnStyle}>
-            Çıkış Yap
-          </button>
-        </div>
-        <h2 style={{ margin: "10px 0 5px 0" }}>{currentUser.email}</h2>
-        <div style={balanceBoxStyle}>
-          <span style={{ fontSize: "14px", color: "#94a3b8" }}>
-            GÜNCEL BAKİYE
-          </span>
-          <h1 style={{ fontSize: "36px", margin: "5px 0", color: "#38bdf8" }}>
-            ₺{currentUser.balance.toFixed(2)}
-          </h1>
-        </div>
-      </div>
-
-      {/* İŞLEMLER ALANI */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: "20px",
-          marginTop: "20px",
-        }}
-      >
-        {/* ÖDE FORMU */}
-        <div style={boxStyle}>
-          <h3 style={{ marginTop: 0 }}>🛒 Hızlı Ödeme (Kasa)</h3>
-          <label style={labelStyle}>Kasa Seçin:</label>
-          <select
-            style={inputStyle}
-            value={payCategory}
-            onChange={(e) => setPayCategory(e.target.value)}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "20px",
+            }}
           >
-            <option value="yemek">Yemek Kasası</option>
-            <option value="kahve">Kahve Kasası</option>
-            <option value="atistirmalik">Atıştırmalık Kasası</option>
-          </select>
-
-          <label style={labelStyle}>Tutar (TL):</label>
-          <input
-            type="number"
-            style={inputStyle}
-            value={payAmount}
-            onChange={(e) => setPayAmount(Number(e.target.value))}
-          />
-
-          <button
-            disabled={isSubmitting}
-            onClick={handlePayment}
-            style={buttonStyle("#10b981")}
-          >
-            {isSubmitting ? "İşleniyor..." : "Ödeme Yap"}
-          </button>
-        </div>
-
-        {/* NORMAL USER -> TRANSFER FORMU */}
-        {!isAdmin && (
-          <div style={boxStyle}>
-            <h3 style={{ marginTop: 0 }}>💸 Arkadaşa Transfer</h3>
-            <label style={labelStyle}>Alıcı Seçin:</label>
-            <select
-              style={inputStyle}
-              onChange={(e) => setTransferReceiverId(Number(e.target.value))}
-              defaultValue=""
+            {/* ROZET KISMI */}
+            <span
+              style={{
+                backgroundColor: isAdmin ? "#d97706" : "#2563eb",
+                padding: "6px 14px",
+                borderRadius: "20px",
+                fontSize: "12px",
+                fontWeight: "bold",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+              }}
             >
-              <option value="" disabled>
-                -- Kişi Seç --
-              </option>
-              {allUsers
-                .filter((u) => u.id !== currentUser.id)
-                .map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.email}
-                  </option>
-                ))}
-            </select>
+              {isAdmin ? "👑 ADMIN" : "👤 KULLANICI"}
+            </span>
 
-            <label style={labelStyle}>Tutar (TL):</label>
-            <input
-              type="number"
-              style={inputStyle}
-              value={transferAmount}
-              onChange={(e) => setTransferAmount(Number(e.target.value))}
-            />
+            <span style={{ color: "#94a3b8", fontSize: "14px" }}>
+              {user?.email}
+            </span>
 
             <button
-              disabled={isSubmitting}
-              onClick={handleTransfer}
-              style={buttonStyle("#3b82f6")}
+              onClick={handleLogout}
+              style={{
+                backgroundColor: "#ef444420",
+                color: "#f87171",
+                border: "1px solid #ef444440",
+                padding: "6px 16px",
+                borderRadius: "8px",
+                cursor: "pointer",
+              }}
             >
-              {isSubmitting ? "İşleniyor..." : "Gönder"}
+              Çıkış Yap
             </button>
           </div>
-        )}
-
-        {/* ADMIN USER -> BAKİYE YÜKLE FORMU */}
-        {isAdmin && (
-          <div style={boxStyle}>
-            <h3 style={{ marginTop: 0 }}>💵 Kullanıcıya Bakiye Yükle</h3>
-            <label style={labelStyle}>Kullanıcı Seçin:</label>
-            <select
-              style={inputStyle}
-              onChange={(e) => setDepositTargetId(Number(e.target.value))}
-              defaultValue=""
+          <div style={{ textAlign: "center" }}>
+            <div
+              style={{
+                fontSize: "12px",
+                color: "#94a3b8",
+                letterSpacing: "1px",
+              }}
             >
-              <option value="" disabled>
-                -- Kullanıcı Seç --
-              </option>
+              GÜNCEL HESAP BAKİYESİ
+            </div>
+            <div
+              style={{
+                fontSize: "36px",
+                fontWeight: "bold",
+                color: "#38bdf8",
+                marginTop: "5px",
+              }}
+            >
+              ₺
+              {user?.balance?.toLocaleString("tr-TR", {
+                minimumFractionDigits: 2,
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* İŞLEM FORM KARTLARI */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: "20px",
+            marginBottom: "30px",
+          }}
+        >
+          {/* ÖDEME */}
+          <div
+            style={{
+              backgroundColor: "white",
+              padding: "24px",
+              borderRadius: "16px",
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <h3 style={{ margin: "0 0 16px 0", fontSize: "16px" }}>
+              🛒 Hızlı Ödeme (Kasa)
+            </h3>
+            <select
+              value={payCategory}
+              onChange={(e) => setPayCategory(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "10px",
+                marginBottom: "12px",
+                borderRadius: "8px",
+                border: "1px solid #cbd5e1",
+              }}
+            >
+              <option value="Yemek Kasası">🍔 Yemek Kasası</option>
+              <option value="Kahve Kasası">☕ Kahve Kasası</option>
+              <option value="Aktivite Kasası">🎯 Aktivite Kasası</option>
+            </select>
+            <input
+              type="number"
+              placeholder="Tutar (TL)"
+              value={payAmount}
+              onChange={(e) => setPayAmount(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "10px",
+                marginBottom: "16px",
+                borderRadius: "8px",
+                border: "1px solid #cbd5e1",
+                boxSizing: "border-box",
+              }}
+            />
+            <button
+              onClick={handlePayment}
+              style={{
+                width: "100%",
+                backgroundColor: "#10b981",
+                color: "white",
+                border: "none",
+                padding: "12px",
+                borderRadius: "8px",
+                fontWeight: "bold",
+                cursor: "pointer",
+              }}
+            >
+              Ödeme Yap
+            </button>
+          </div>
+
+          {/* TRANSFER */}
+          <div
+            style={{
+              backgroundColor: "white",
+              padding: "24px",
+              borderRadius: "16px",
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <h3 style={{ margin: "0 0 16px 0", fontSize: "16px" }}>
+              💸 Arkadaşa Transfer
+            </h3>
+            <select
+              value={targetUserId}
+              onChange={(e) => setTargetUserId(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "10px",
+                marginBottom: "12px",
+                borderRadius: "8px",
+                border: "1px solid #cbd5e1",
+              }}
+            >
+              <option value="">-- Alıcı Seçin --</option>
               {allUsers.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.email} (₺{u.balance})
+                <option key={u._id || u.id} value={u._id || u.id}>
+                  {u.email}
                 </option>
               ))}
             </select>
-
-            <label style={labelStyle}>Yüklenecek Tutar (TL):</label>
             <input
               type="number"
-              style={inputStyle}
-              value={depositAmount}
-              onChange={(e) => setDepositAmount(Number(e.target.value))}
-            />
-
-            <button
-              disabled={isSubmitting}
-              onClick={handleDeposit}
-              style={buttonStyle("#8b5cf6")}
-            >
-              {isSubmitting ? "İşleniyor..." : "Bakiye Yükle"}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* SADECE ADMIN -> MUTABAKAT PANELİ */}
-      {isAdmin && (
-        <div
-          style={{
-            ...boxStyle,
-            backgroundColor: "#fffbeb",
-            borderColor: "#fde68a",
-            marginTop: "20px",
-          }}
-        >
-          <h3 style={{ marginTop: 0 }}>👑 Admin Mutabakat Paneli</h3>
-          <button
-            onClick={handleRunReconciliation}
-            style={buttonStyle("#d97706")}
-          >
-            🔍 Mutabakat Raporunu Çalıştır
-          </button>
-
-          {reconciliationReport && (
-            <div
+              placeholder="Tutar (TL)"
+              value={transferAmount}
+              onChange={(e) => setTransferAmount(e.target.value)}
               style={{
-                marginTop: "15px",
-                background: "#fff",
-                padding: "15px",
+                width: "100%",
+                padding: "10px",
+                marginBottom: "16px",
                 borderRadius: "8px",
-                border: "1px solid #fcd34d",
+                border: "1px solid #cbd5e1",
+                boxSizing: "border-box",
+              }}
+            />
+            <button
+              onClick={handleTransfer}
+              style={{
+                width: "100%",
+                backgroundColor: "#2563eb",
+                color: "white",
+                border: "none",
+                padding: "12px",
+                borderRadius: "8px",
+                fontWeight: "bold",
+                cursor: "pointer",
               }}
             >
-              <h4>
-                Mutabakat Sonucu:{" "}
-                {reconciliationReport.hasDiscrepancy
-                  ? "⚠️ UYUŞMAZLIK VAR"
-                  : "✅ TÜM MUTABAKATLAR OK"}
-              </h4>
-              <pre
-                style={{
-                  fontSize: "12px",
-                  background: "#f8fafc",
-                  padding: "10px",
-                  borderRadius: "6px",
-                  overflowX: "auto",
-                }}
-              >
-                {JSON.stringify(reconciliationReport, null, 2)}
-              </pre>
-            </div>
-          )}
+              Transfer Gönder
+            </button>
+          </div>
         </div>
-      )}
 
-      {/* İŞLEM GEÇMİŞİ TABLOSU (Admin tümünü, User sadece kendisininkini görür) */}
-      <div style={{ ...boxStyle, marginTop: "20px" }}>
-        <h3 style={{ marginTop: 0 }}>
-          📜{" "}
-          {isAdmin
-            ? "Tüm Sistem İşlem Geçmişi (Admin Paneli)"
-            : "İşlem Geçmişim"}
-        </h3>
-
-        {transactions.length === 0 ? (
-          <p style={{ color: "#64748b", fontSize: "14px" }}>
-            Henüz bir işlem geçmişiniz bulunmuyor.
-          </p>
-        ) : (
-          <table
-            style={{
-              width: "100%",
-              textAlign: "left",
-              borderCollapse: "collapse",
-            }}
-          >
-            <thead>
-              <tr
-                style={{
-                  borderBottom: "2px solid #e2e8f0",
-                  color: "#64748b",
-                  fontSize: "14px",
-                }}
-              >
-                <th style={{ padding: "8px" }}>Tipi</th>
-                <th style={{ padding: "8px" }}>Açıklama</th>
-                <th style={{ padding: "8px", textAlign: "right" }}>Tutar</th>
-                <th style={{ padding: "8px" }}>Tarih</th>
-              </tr>
-            </thead>
-            <tbody>
-              {transactions.map((tx) => (
-                <tr key={tx.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                  <td style={{ padding: "10px 8px" }}>
-                    <span style={typeBadgeStyle(tx.type)}>
-                      {tx.type.toUpperCase()}
-                    </span>
-                  </td>
-                  <td style={{ padding: "10px 8px" }}>{tx.description}</td>
-                  <td style={{ padding: "10px 8px", fontWeight: "bold" }}>
-                    ₺{(tx.amountInKurus / 100).toFixed(2)}
-                  </td>
-                  <td
-                    style={{
-                      padding: "10px 8px",
-                      color: "#64748b",
-                      fontSize: "13px",
-                    }}
-                  >
-                    {new Date(tx.createdAt).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-
-        {/* Sayfalama */}
+        {/* İŞLEM GEÇMİŞİ */}
         <div
           style={{
-            marginTop: "20px",
-            display: "flex",
-            gap: "10px",
-            justifyContent: "center",
-            alignItems: "center",
+            backgroundColor: "white",
+            padding: "24px",
+            borderRadius: "16px",
+            border: "1px solid #e2e8f0",
           }}
         >
-          <button
-            disabled={page <= 1}
-            onClick={() => setPage((p) => p - 1)}
-            style={pageBtnStyle}
+          <h3
+            style={{ margin: "0 0 20px 0", fontSize: "18px", color: "#0f172a" }}
           >
-            Önceki
-          </button>
-          <span style={{ fontSize: "14px", color: "#475569" }}>
-            Sayfa {page} / {lastPage}
-          </span>
-          <button
-            disabled={page >= lastPage}
-            onClick={() => setPage((p) => p + 1)}
-            style={pageBtnStyle}
-          >
-            Sonraki
-          </button>
+            📜 {isAdmin ? "Tüm Sistem İşlem Geçmişi" : "İşlem Geçmişim"}
+          </h3>
+          {transactions.length === 0 ? (
+            <div
+              style={{ color: "#94a3b8", textAlign: "center", padding: "20px" }}
+            >
+              Henüz işlem bulunmuyor.
+            </div>
+          ) : (
+            transactions.map((tx) => (
+              <div
+                key={tx._id || tx.id}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "12px 0",
+                  borderBottom: "1px solid #f1f5f9",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: "600", color: "#334155" }}>
+                    {tx.type} {tx.description ? `- ${tx.description}` : ""}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: "12px",
+                      color: "#94a3b8",
+                      marginTop: "2px",
+                    }}
+                  >
+                    {tx.createdAt
+                      ? new Date(tx.createdAt).toLocaleString("tr-TR")
+                      : "-"}
+                  </div>
+                </div>
+                <div style={{ fontWeight: "bold", color: "#ef4444" }}>
+                  -₺
+                  {tx.amount?.toLocaleString("tr-TR", {
+                    minimumFractionDigits: 2,
+                  })}
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>
   );
 }
-
-// Stiller
-const cardStyle: React.CSSProperties = {
-  background: "#0f172a",
-  color: "#fff",
-  padding: "24px",
-  borderRadius: "16px",
-  boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)",
-};
-const balanceBoxStyle: React.CSSProperties = {
-  background: "#1e293b",
-  padding: "16px",
-  borderRadius: "12px",
-  marginTop: "12px",
-  textAlign: "center",
-};
-const boxStyle: React.CSSProperties = {
-  background: "#fff",
-  padding: "20px",
-  borderRadius: "12px",
-  border: "1px solid #e2e8f0",
-  boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)",
-};
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: "13px",
-  color: "#475569",
-  marginBottom: "4px",
-};
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "10px",
-  margin: "2px 0 14px 0",
-  borderRadius: "8px",
-  border: "1px solid #cbd5e1",
-  boxSizing: "border-box",
-};
-const buttonStyle = (bg: string): React.CSSProperties => ({
-  width: "100%",
-  padding: "12px",
-  background: bg,
-  color: "#fff",
-  border: "none",
-  borderRadius: "8px",
-  fontWeight: "bold",
-  cursor: "pointer",
-});
-const badgeStyle = (isAdmin: boolean): React.CSSProperties => ({
-  padding: "4px 10px",
-  borderRadius: "20px",
-  fontSize: "12px",
-  fontWeight: "bold",
-  background: isAdmin ? "#fef3c7" : "#e0e7ff",
-  color: isAdmin ? "#b45309" : "#3730a3",
-});
-const typeBadgeStyle = (type: string): React.CSSProperties => ({
-  padding: "3px 8px",
-  borderRadius: "6px",
-  fontSize: "11px",
-  fontWeight: "bold",
-  background:
-    type === "payment"
-      ? "#fee2e2"
-      : type === "transfer"
-        ? "#dbeafe"
-        : "#dcfce7",
-  color:
-    type === "payment"
-      ? "#991b1b"
-      : type === "transfer"
-        ? "#1e40af"
-        : "#166534",
-});
-const pageBtnStyle: React.CSSProperties = {
-  padding: "6px 14px",
-  border: "1px solid #cbd5e1",
-  background: "#fff",
-  borderRadius: "6px",
-  cursor: "pointer",
-  fontSize: "13px",
-};
-const logoutBtnStyle: React.CSSProperties = {
-  padding: "6px 12px",
-  background: "#ef4444",
-  color: "#fff",
-  border: "none",
-  borderRadius: "6px",
-  cursor: "pointer",
-  fontSize: "12px",
-  fontWeight: "bold",
-};
-const centerStyle: React.CSSProperties = {
-  display: "flex",
-  justifyContent: "center",
-  alignItems: "center",
-  minHeight: "100vh",
-};

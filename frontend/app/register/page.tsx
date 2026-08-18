@@ -1,42 +1,38 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import axios from "axios";
 
 export default function RegisterPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError("");
-    setSuccess(false);
+    setLoading(true);
 
     try {
-      // Backend'deki register endpoint'ine istek atıyoruz
-      // Not: Backend portun 3000 olduğu için doğrudan oraya gönderiyoruz
-      await axios.post("http://localhost:3000/auth/register", {
+      await axios.post("http://localhost:5002/auth/register", {
         email,
         password,
       });
 
-      setSuccess(true);
-      setEmail("");
-      setPassword("");
+      alert("Kayıt başarılı! Giriş sayfasına yönlendiriliyorsunuz.");
+      router.push("/login");
     } catch (err: unknown) {
-      if (err && typeof err === "object" && "response" in err) {
-        const errorObject = err as {
-          response?: { data?: { message?: string } };
-        };
-        setError(
-          errorObject.response?.data?.message ||
-            "Kayıt sırasında bir hata oluştu!",
+      console.error(err);
+      if (axios.isAxiosError(err)) {
+        alert(
+          err.response?.data?.message || "Kayıt olunurken bir hata oluştu!",
         );
       } else {
-        setError("Kayıt sırasında bir hata oluştu!");
+        alert("Kayıt olunurken bir hata oluştu!");
       }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -46,73 +42,135 @@ export default function RegisterPage() {
         display: "flex",
         justifyContent: "center",
         alignItems: "center",
-        height: "100vh",
-        fontFamily: "sans-serif",
+        minHeight: "100vh",
+        backgroundColor: "#f8fafc",
+        fontFamily: "system-ui",
       }}
     >
       <form
-        onSubmit={handleSubmit}
+        onSubmit={handleRegister}
         style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "15px",
-          width: "300px",
-          padding: "20px",
-          border: "1px solid #ccc",
-          borderRadius: "8px",
+          backgroundColor: "white",
+          padding: "32px",
+          borderRadius: "16px",
+          width: "100%",
+          maxWidth: "360px",
+          boxShadow:
+            "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
+          border: "1px solid #e2e8f0",
         }}
       >
-        <h2 style={{ textAlign: "center", margin: "0 0 10px 0" }}>Kayıt Ol</h2>
-
-        {error && (
-          <p style={{ color: "red", fontSize: "14px", margin: 0 }}>{error}</p>
-        )}
-        {success && (
-          <p style={{ color: "green", fontSize: "14px", margin: 0 }}>
-            Kayıt başarılı! Şimdi Giriş Yapabilirsiniz.
-          </p>
-        )}
-
-        <input
-          type="email"
-          placeholder="Yeni E-posta Adresi"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
+        <h2
+          style={{ margin: "0 0 8px 0", textAlign: "center", color: "#0f172a" }}
+        >
+          Hesap Oluştur
+        </h2>
+        <p
           style={{
-            padding: "10px",
-            borderRadius: "4px",
-            border: "1px solid #ccc",
+            margin: "0 0 24px 0",
+            textAlign: "center",
+            color: "#64748b",
+            fontSize: "14px",
           }}
-        />
+        >
+          {"Office Wallet'a katılın"}
+        </p>
 
-        <input
-          type="password"
-          placeholder="Yeni Şifre"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          style={{
-            padding: "10px",
-            borderRadius: "4px",
-            border: "1px solid #ccc",
-          }}
-        />
+        <div style={{ marginBottom: "16px" }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: "14px",
+              fontWeight: "600",
+              color: "#334155",
+              marginBottom: "6px",
+            }}
+          >
+            E-posta Adresi
+          </label>
+          <input
+            type="email"
+            placeholder="ornek@gmail.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              borderRadius: "8px",
+              border: "1px solid #cbd5e1",
+              boxSizing: "border-box",
+              fontSize: "14px",
+              outline: "none",
+            }}
+          />
+        </div>
+
+        <div style={{ marginBottom: "24px" }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: "14px",
+              fontWeight: "600",
+              color: "#334155",
+              marginBottom: "6px",
+            }}
+          >
+            Şifre
+          </label>
+          <input
+            type="password"
+            placeholder="••••••••"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              borderRadius: "8px",
+              border: "1px solid #cbd5e1",
+              boxSizing: "border-box",
+              fontSize: "14px",
+              outline: "none",
+            }}
+          />
+        </div>
 
         <button
           type="submit"
+          disabled={loading}
           style={{
-            padding: "10px",
-            backgroundColor: "#28a745",
+            width: "100%",
+            padding: "12px",
+            backgroundColor: "#2563eb",
             color: "white",
             border: "none",
-            borderRadius: "4px",
-            cursor: "pointer",
+            borderRadius: "8px",
             fontWeight: "bold",
+            fontSize: "14px",
+            cursor: "pointer",
+            opacity: loading ? 0.7 : 1,
           }}
         >
-          Kaydol
+          {loading ? "Kayıt Yapılıyor..." : "Kayıt Ol"}
         </button>
+
+        <div
+          style={{
+            marginTop: "20px",
+            textAlign: "center",
+            fontSize: "14px",
+            color: "#64748b",
+          }}
+        >
+          Zaten hesabınız var mı?{" "}
+          <span
+            onClick={() => router.push("/login")}
+            style={{ color: "#2563eb", cursor: "pointer", fontWeight: "600" }}
+          >
+            Giriş Yap
+          </span>
+        </div>
       </form>
     </div>
   );
